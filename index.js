@@ -21,7 +21,7 @@ function displayBanner() {
     ██╔══╝  ██║   ██║██╔══██╗██╔══╝     ██║     ██║   ██║██╔══╝  ██╔══╝  ██╔══╝  ██╔══╝  
     ██║     ╚██████╔╝██║  ██║███████╗   ╚██████╗╚██████╔╝██║     ██║     ███████╗███████╗
     ╚═╝      ╚═════╝ ╚═╝  ╚═╝╚══════╝    ╚═════╝ ╚═════╝ ╚═╝     ╚═╝     ╚══════╝╚══════╝
-    FORE COFFEE AUTO SYSTEM v1.1 - Ultra Precision
+    FORE COFFEE AUTO SYSTEM
     By Paizutempest x Yaelanit | Mode: Manual Identity
     `));
 }
