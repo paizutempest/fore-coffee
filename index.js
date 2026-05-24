@@ -22,7 +22,7 @@ function displayBanner() {
     ██║     ╚██████╔╝██║  ██║███████╗   ╚██████╗╚██████╔╝██║     ██║     ███████╗███████╗
     ╚═╝      ╚═════╝ ╚═╝  ╚═╝╚══════╝    ╚═════╝ ╚═════╝ ╚═╝     ╚═╝     ╚══════╝╚══════╝
     FORE COFFEE AUTO SYSTEM
-    By Paizutempest x Yaelanit | Mode: Manual Identity
+    By Paizutempest x Yaelanit
     `));
 }
 
