@@ -8,7 +8,7 @@ import fs from "fs";
 import { table } from "table";
 import dayjs from "dayjs";
 
-// Utility: Random Number
+// Random Number
 const getRandomNumber = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
 // Display Luxury Banner
