@@ -11,7 +11,7 @@ import dayjs from "dayjs";
 // Random Number
 const getRandomNumber = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
-// Display Luxury Banner
+
 function displayBanner() {
     console.clear();
     console.log(gradient(['#6F4E37', '#A67B5B', '#ECB176'])(`
