@@ -122,7 +122,7 @@ const profileDetail = async (deviceId, token) => {
     const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD 00:00:00');
     const encodedDate = encodeURIComponent(yesterday);
     
-    // Inject encodedDate ke dalam URL template literal
+    // Inject encodedDate ke dalam URL
     const url = `https://api.fore.coffee/user/profile/detail?last_seen=${encodedDate}`;
     
     log.process(`Sync Profile Data - Last Seen: ${yesterday}`);
