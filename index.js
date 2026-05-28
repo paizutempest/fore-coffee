@@ -35,7 +35,7 @@ const log = {
     process: (msg) => console.log(`${chalk.magenta('⚙')} [${dayjs().format('HH:mm:ss')}] ${chalk.italic(msg)}...`)
 };
 
-// --- CORE FUNCTIONS ---
+
 
 const getHeaders = (deviceId, accessToken = null) => {
     const headers = {
