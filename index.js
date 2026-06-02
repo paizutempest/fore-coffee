@@ -1,4 +1,5 @@
 import "dotenv/config";
+import crypto from "crypto";
 import chalk from "chalk";
 import gradient from "gradient-string";
 import { input, select } from "@inquirer/prompts";
@@ -7,6 +8,48 @@ import { v4 } from "uuid";
 import fs from "fs";
 import { table } from "table";
 import dayjs from "dayjs";
+
+// --- Environment variable validation ---
+const REQUIRED_ENV = ["FORE_SECRET_KEY", "FORE_VERSION", "DEFAULT_PIN"];
+const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
+if (missing.length) {
+    console.error(`Missing required environment variables: ${missing.join(", ")}\nSee .env.example for details.`);
+    process.exit(1);
+}
+
+// --- Encryption helpers for sensitive local storage ---
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString("hex");
+const ALGORITHM = "aes-256-cbc";
+
+function encrypt(text) {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv(ALGORITHM, Buffer.from(ENCRYPTION_KEY, "hex"), iv);
+    let encrypted = cipher.update(String(text), "utf8", "hex");
+    encrypted += cipher.final("hex");
+    return iv.toString("hex") + ":" + encrypted;
+}
+
+function decrypt(data) {
+    const [ivHex, encrypted] = data.split(":");
+    const decipher = crypto.createDecipheriv(ALGORITHM, Buffer.from(ENCRYPTION_KEY, "hex"), Buffer.from(ivHex, "hex"));
+    let decrypted = decipher.update(encrypted, "hex", "utf8");
+    decrypted += decipher.final("utf8");
+    return decrypted;
+}
+
+// --- Input validation helpers ---
+function validatePhone(phone) {
+    return /^628\d{8,13}$/.test(phone);
+}
+
+function validateOtp(otp) {
+    return /^\d{4,6}$/.test(otp);
+}
+
+function validateReferral(code) {
+    if (!code) return true; // optional
+    return /^[A-Za-z0-9_-]{1,20}$/.test(code);
+}
 
 // Random Number
 const getRandomNumber = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
@@ -56,7 +99,7 @@ const getHeaders = (deviceId, accessToken = null) => {
         headers["Language"] = "ID";
         headers["Timezone"] = "+07:00";
     } else {
-        headers["Secret-Key"] = "0kFe6Oc3R1eEa2CpO2FeFdzElp";
+        headers["Secret-Key"] = process.env.FORE_SECRET_KEY;
     }
     return headers;
 };
@@ -175,15 +218,26 @@ const fetchRandomUser = async () => {
         if (!fs.existsSync("accounts.json")) {
             log.warn("Belum ada akun terdaftar.");
         } else {
-            const accounts = JSON.parse(fs.readFileSync("accounts.json", "utf8"));
-            const data = accounts.map(a => [a.phone, a.name, a.email, a.point || 0]);
-            console.log(table([["Phone", "Name", "Email", "Points"], ...data]));
+            try {
+                const accounts = JSON.parse(fs.readFileSync("accounts.json", "utf8"));
+                const data = accounts.map(a => [a.phone, a.name, a.email, a.point || 0]);
+                console.log(table([["Phone", "Name", "Email", "Points"], ...data]));
+            } catch {
+                log.error("accounts.json rusak atau tidak dapat dibaca.");
+            }
         }
     }
 
     if (menu === 'register') {
-        const phoneInput = await input({ message: "Masukkan Nomor HP (Contoh: 628xxx):" });
-        const referral = await input({ message: "Masukkan Referral Code (Opsional):", default: "" });
+        const phoneInput = await input({
+            message: "Masukkan Nomor HP (Contoh: 628xxx):",
+            validate: (v) => validatePhone(v) || "Format nomor tidak valid. Gunakan format 628xxxxxxxxx."
+        });
+        const referral = await input({
+            message: "Masukkan Referral Code (Opsional):",
+            default: "",
+            validate: (v) => validateReferral(v) || "Referral hanya boleh huruf, angka, _ atau - (maks 20 karakter)."
+        });
         
         log.process("Inisialisasi Device & Token");
         const uuid = v4();
@@ -210,7 +264,10 @@ const fetchRandomUser = async () => {
 
         if (otpReq.payload?.code) {
             log.info(`OTP telah dikirim via SMS/WhatsApp ke ${phoneInput}`);
-            const otpCode = await input({ message: "Masukkan Kode OTP:" });
+            const otpCode = await input({
+                message: "Masukkan Kode OTP:",
+                validate: (v) => validateOtp(v) || "OTP harus 4-6 digit angka."
+            });
 
             log.process("Memproses Pendaftaran & Identitas Random");
             const rUser = await fetchRandomUser();
@@ -229,22 +286,26 @@ const fetchRandomUser = async () => {
                 const randEmail = `${rUser.name.first.toLowerCase()}${getRandomNumber(100, 999)}@gmail.com`;
                 await updateProfile(uuid, accessToken, fullName, randEmail, birth);
 
-                // Save to JSON
+                // Save to JSON (encrypt sensitive fields)
                 const newAcc = {
                     phone: phoneInput,
                     name: fullName,
                     email: randEmail,
                     birthday: birth,
                     uuid: uuid,
-                    access_token: accessToken,
-                    pin: process.env.DEFAULT_PIN,
+                    access_token: encrypt(accessToken),
+                    pin: encrypt(process.env.DEFAULT_PIN),
                     registered_at: dayjs().format('YYYY-MM-DD HH:mm:ss')
                 };
 
                 let accounts = [];
-                if (fs.existsSync("accounts.json")) accounts = JSON.parse(fs.readFileSync("accounts.json"));
+                try {
+                    if (fs.existsSync("accounts.json")) accounts = JSON.parse(fs.readFileSync("accounts.json", "utf8"));
+                } catch {
+                    log.warn("accounts.json rusak, membuat ulang.");
+                }
                 accounts.push(newAcc);
-                fs.writeFileSync("accounts.json", JSON.stringify(accounts, null, 2));
+                fs.writeFileSync("accounts.json", JSON.stringify(accounts, null, 2), { mode: 0o600 });
                 
                 log.success("Data Akun Berhasil Disimpan ke accounts.json");
             } else {
