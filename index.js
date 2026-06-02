@@ -11,6 +11,31 @@ import dayjs from "dayjs";
 // Random Number
 const getRandomNumber = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
+// Safe JSON fetch wrapper — validates HTTP status and JSON parsing
+const safeFetch = async (url, options = {}) => {
+    const res = await fetch(url, options);
+    if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${text.slice(0, 200) || res.statusText}`);
+    }
+    const json = await res.json().catch(() => {
+        throw new Error(`Invalid JSON response from ${url}`);
+    });
+    return json;
+};
+
+// Safe JSON file reader
+const readAccountsFile = (path) => {
+    try {
+        const raw = fs.readFileSync(path, "utf8");
+        return JSON.parse(raw);
+    } catch (err) {
+        if (err.code === 'ENOENT') return null;
+        log.error(`Failed to read ${path}: ${err.message}`);
+        return null;
+    }
+};
+
 
 function displayBanner() {
     console.clear();
@@ -62,30 +87,27 @@ const getHeaders = (deviceId, accessToken = null) => {
 };
 
 const getToken = async (deviceId) => {
-    const res = await fetch("https://api.fore.coffee/auth/get-token", { headers: getHeaders(deviceId) });
-    return res.json();
+    return safeFetch("https://api.fore.coffee/auth/get-token", { headers: getHeaders(deviceId) });
 };
 
 const checkPhone = async (deviceId, token, phone) => {
-    const res = await fetch("https://api.fore.coffee/auth/check-phone", {
+    return safeFetch("https://api.fore.coffee/auth/check-phone", {
         method: "POST",
         headers: getHeaders(deviceId, token),
         body: JSON.stringify({ phone: `+${phone}` })
     });
-    return res.json();
 };
 
 const reqLogin = async (deviceId, token, phone) => {
-    const res = await fetch("https://api.fore.coffee/auth/req-login-code", {
+    return safeFetch("https://api.fore.coffee/auth/req-login-code", {
         method: "POST",
         headers: getHeaders(deviceId, token),
         body: JSON.stringify({ method: "", phone: `+${phone}` })
     });
-    return res.json();
 };
 
 const signUp = async (deviceId, token, phone, name, otp, referral) => {
-    const res = await fetch("https://api.fore.coffee/auth/sign-up", {
+    return safeFetch("https://api.fore.coffee/auth/sign-up", {
         method: "POST",
         headers: getHeaders(deviceId, token),
         body: JSON.stringify({
@@ -96,25 +118,22 @@ const signUp = async (deviceId, token, phone, name, otp, referral) => {
             referral_code: referral
         })
     });
-    return res.json();
 };
 
 const addPin = async (deviceId, token, pin) => {
-    const res = await fetch("https://api.fore.coffee/auth/pin", {
+    return safeFetch("https://api.fore.coffee/auth/pin", {
         method: "POST",
         headers: getHeaders(deviceId, token),
         body: JSON.stringify({ confirm_pin: pin, pin: pin })
     });
-    return res.json();
 };
 
 const updateProfile = async (deviceId, token, name, email, birthday) => {
-    const res = await fetch("https://api.fore.coffee/user/profile", {
+    return safeFetch("https://api.fore.coffee/user/profile", {
         method: "PUT",
         headers: getHeaders(deviceId, token),
         body: JSON.stringify({ user_name: name, user_email: email, user_birthday: birthday })
     });
-    return res.json();
 };
 
 const profileDetail = async (deviceId, token) => {
@@ -128,12 +147,10 @@ const profileDetail = async (deviceId, token) => {
     log.process(`Sync Profile Data - Last Seen: ${yesterday}`);
 
     try {
-        const res = await fetch(url, {
+        const response = await safeFetch(url, {
             method: "GET",
             headers: getHeaders(deviceId, token)
         });
-
-        const response = await res.json();
 
         if (response.payload) {
             log.success(`Data Berhasil Sinkron! User: ${chalk.cyan(response.payload.user_name)} | Point: ${chalk.yellow(response.payload.user_point)}`);
@@ -149,8 +166,10 @@ const profileDetail = async (deviceId, token) => {
 };
 
 const fetchRandomUser = async () => {
-    const res = await fetch("https://randomuser.me/api?nat=id");
-    const data = await res.json();
+    const data = await safeFetch("https://randomuser.me/api?nat=id");
+    if (!data.results || !data.results[0]) {
+        throw new Error("RandomUser API returned no results");
+    }
     return data.results[0];
 };
 
@@ -172,10 +191,10 @@ const fetchRandomUser = async () => {
     if (menu === 'exit') process.exit();
 
     if (menu === 'list') {
-        if (!fs.existsSync("accounts.json")) {
+        const accounts = readAccountsFile("accounts.json");
+        if (!accounts || accounts.length === 0) {
             log.warn("Belum ada akun terdaftar.");
         } else {
-            const accounts = JSON.parse(fs.readFileSync("accounts.json", "utf8"));
             const data = accounts.map(a => [a.phone, a.name, a.email, a.point || 0]);
             console.log(table([["Phone", "Name", "Email", "Points"], ...data]));
         }
@@ -187,10 +206,17 @@ const fetchRandomUser = async () => {
         
         log.process("Inisialisasi Device & Token");
         const uuid = v4();
-        const tokenRes = await getToken(uuid);
+
+        let tokenRes;
+        try {
+            tokenRes = await getToken(uuid);
+        } catch (err) {
+            log.error(`Gagal mendapatkan initial token: ${err.message}`);
+            return;
+        }
         
         if (!tokenRes.payload) {
-            log.error("Gagal mendapatkan initial token.");
+            log.error(`Gagal mendapatkan initial token: ${tokenRes.message || 'Respons tidak valid'}`);
             return;
         }
 
@@ -198,7 +224,13 @@ const fetchRandomUser = async () => {
         log.success("Session Token Berhasil Dibuat");
 
         log.process(`Mengecek Status Nomor ${phoneInput}`);
-        const check = await checkPhone(uuid, accessToken, phoneInput);
+        let check;
+        try {
+            check = await checkPhone(uuid, accessToken, phoneInput);
+        } catch (err) {
+            log.error(`Gagal mengecek nomor: ${err.message}`);
+            return;
+        }
 
         if (check.payload?.is_registered === 1) {
             log.warn("Nomor sudah terdaftar! Gunakan menu login.");
@@ -206,28 +238,60 @@ const fetchRandomUser = async () => {
         }
 
         log.process("Meminta Kode OTP ke Server Fore");
-        const otpReq = await reqLogin(uuid, accessToken, phoneInput);
+        let otpReq;
+        try {
+            otpReq = await reqLogin(uuid, accessToken, phoneInput);
+        } catch (err) {
+            log.error(`Gagal meminta OTP: ${err.message}`);
+            return;
+        }
 
         if (otpReq.payload?.code) {
             log.info(`OTP telah dikirim via SMS/WhatsApp ke ${phoneInput}`);
             const otpCode = await input({ message: "Masukkan Kode OTP:" });
 
             log.process("Memproses Pendaftaran & Identitas Random");
-            const rUser = await fetchRandomUser();
+            let rUser;
+            try {
+                rUser = await fetchRandomUser();
+            } catch (err) {
+                log.error(`Gagal mendapatkan identitas random: ${err.message}`);
+                return;
+            }
             const fullName = `${rUser.name.first} ${rUser.name.last}`;
             
-            const regResult = await signUp(uuid, accessToken, phoneInput, fullName, otpCode, referral);
+            let regResult;
+            try {
+                regResult = await signUp(uuid, accessToken, phoneInput, fullName, otpCode, referral);
+            } catch (err) {
+                log.error(`Gagal Sign Up: ${err.message}`);
+                return;
+            }
 
             if (regResult.payload?.text === "Success") {
                 log.success(`Pendaftaran Berhasil! Halo, ${fullName}`);
                 
                 log.process("Mengatur Security PIN");
-                await addPin(uuid, accessToken, process.env.DEFAULT_PIN);
+                try {
+                    const pinResult = await addPin(uuid, accessToken, process.env.DEFAULT_PIN);
+                    if (!pinResult.payload) {
+                        log.warn(`PIN mungkin gagal diset: ${pinResult.message || 'Respons tidak valid'}`);
+                    }
+                } catch (err) {
+                    log.error(`Gagal mengatur PIN: ${err.message}`);
+                }
                 
                 log.process("Melengkapi Profil & Email");
                 const birth = dayjs().subtract(getRandomNumber(19, 25), 'year').format('YYYY-MM-DD');
                 const randEmail = `${rUser.name.first.toLowerCase()}${getRandomNumber(100, 999)}@gmail.com`;
-                await updateProfile(uuid, accessToken, fullName, randEmail, birth);
+                try {
+                    const profileResult = await updateProfile(uuid, accessToken, fullName, randEmail, birth);
+                    if (!profileResult.payload) {
+                        log.warn(`Profil mungkin gagal diupdate: ${profileResult.message || 'Respons tidak valid'}`);
+                    }
+                } catch (err) {
+                    log.error(`Gagal update profil: ${err.message}`);
+                }
 
                 // Save to JSON
                 const newAcc = {
@@ -241,17 +305,19 @@ const fetchRandomUser = async () => {
                     registered_at: dayjs().format('YYYY-MM-DD HH:mm:ss')
                 };
 
-                let accounts = [];
-                if (fs.existsSync("accounts.json")) accounts = JSON.parse(fs.readFileSync("accounts.json"));
+                const accounts = readAccountsFile("accounts.json") || [];
                 accounts.push(newAcc);
-                fs.writeFileSync("accounts.json", JSON.stringify(accounts, null, 2));
-                
-                log.success("Data Akun Berhasil Disimpan ke accounts.json");
+                try {
+                    fs.writeFileSync("accounts.json", JSON.stringify(accounts, null, 2));
+                    log.success("Data Akun Berhasil Disimpan ke accounts.json");
+                } catch (err) {
+                    log.error(`Gagal menyimpan accounts.json: ${err.message}`);
+                }
             } else {
-                log.error(`Gagal Sign Up: ${JSON.stringify(regResult.payload)}`);
+                log.error(`Gagal Sign Up: ${regResult.message || JSON.stringify(regResult.payload)}`);
             }
         } else {
-            log.error("Gagal meminta OTP. Coba beberapa saat lagi.");
+            log.error(`Gagal meminta OTP: ${otpReq.message || 'Coba beberapa saat lagi.'}`);
         }
     }
     
