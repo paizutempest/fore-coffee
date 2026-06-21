@@ -2564,7 +2564,7 @@ async function foValidateVoucherDrawer(cookie, csrf, vouchers) {
     } catch (e) { return { error: -1, error_msg: e.message }; }
 }
 
-async function foPostCheckoutGet(cookie, csrf, shopId, itemId, modelId, qty, fp, fsvInfo, platVouchers, shopVouchers, payData, shipOrders, priceOvr, retries = 3, apply = false, prev = null, useCoins = false) {
+async function foPostCheckoutGet(cookie, csrf, shopId, itemId, modelId, qty, fp, fsvInfo, platVouchers, shopVouchers, payData, shipOrders, priceOvr, retries = 3, apply = false, prev = null, useCoins = false, cartItems = null) {
     for (let i = 1; i <= retries; i++) {
         try {
             const did = (cookie.match(/SPC_F=([^;]+)/) || ['', ''])[1];
@@ -2578,9 +2578,20 @@ async function foPostCheckoutGet(cookie, csrf, shopId, itemId, modelId, qty, fp,
             let so; if (prev?.shipping_orders?.length) so = prev.shipping_orders; else if (shipOrders) so = shipOrders;
             const bom = first ? { session_info: { session_id: sid, version: 0 }, fetch_mode: 1, display_mode: 0 } : { ...(prev?.buy_one_more || {}), session_info: { session_id: sid, version: 1 }, fetch_mode: 0, display_mode: 0 };
             const svip = first ? { status: 1, session_info: { session_id: sid, version: 0 } } : { ...(prev?.svip_one_click_info || {}), session_info: { session_id: sid, version: 0 } };
+
+            const mkFoItem = (it, mo, q) => ({ itemid: parseInt(it), modelid: parseInt(mo) || 0, quantity: parseInt(q), add_on_deal_id: 0, is_add_on_sub_item: false, item_group_id: null, insurances: [], insurance_display: {}, channel_exclusive_info: { source_id: 0, token: '', is_live_stream: false, is_short_video: false, user_path_token: '', user_path_tokens: null, user_path_flag: 1 }, supports_free_returns: false, free_return_eligible: false, com_eligible: false, spu_info: { itemid: 0, modelid: 0, shopid: 0, quantity: 0 }, value_added_service_info: { installation_products: [], trade_in_products: [], warranty_products: first ? [{ product_id: null, selected: false }] : [] }, is_bom_item: false });
+            let foShoporders;
+            if (cartItems && Array.isArray(cartItems) && cartItems.length) {
+                const byShop = {};
+                cartItems.forEach(ci => { const s = parseInt(ci.shopid); if (!byShop[s]) byShop[s] = []; byShop[s].push(mkFoItem(ci.itemid, ci.modelid, ci.quantity)); });
+                let sidx = 1;
+                foShoporders = Object.keys(byShop).map(s => ({ shop: { shopid: parseInt(s) }, items: byShop[s], shipping_id: sidx++ }));
+            } else {
+                foShoporders = [{ shop: { shopid: shopId }, items: [mkFoItem(itemId, modelId, qty)], shipping_id: 1 }];
+            }
             const obj = {
                 ...(first ? {} : { timestamp: prev.timestamp }),
-                shoporders: [{ shop: { shopid: shopId }, items: [{ itemid: itemId, modelid: modelId, quantity: qty, add_on_deal_id: 0, is_add_on_sub_item: false, item_group_id: null, insurances: [], insurance_display: {}, channel_exclusive_info: { source_id: 0, token: '', is_live_stream: false, is_short_video: false, user_path_token: '', user_path_tokens: null, user_path_flag: 1 }, supports_free_returns: false, free_return_eligible: false, com_eligible: false, spu_info: { itemid: 0, modelid: 0, shopid: 0, quantity: 0 }, value_added_service_info: { installation_products: [], trade_in_products: [], warranty_products: first ? [{ product_id: null, selected: false }] : [] }, is_bom_item: false }], shipping_id: 1 }],
+                shoporders: foShoporders,
                 selected_payment_channel_data: payData || {},
                 promotion_data: { use_coins: !!useCoins, free_shipping_voucher_info: fsvInfo || {}, platform_vouchers: (platVouchers || []).map(v => ({ voucher_code: v.voucher_code, promotionid: v.promotionid })), shop_vouchers: shopVouchers || [], check_shop_voucher_entrances: true, auto_apply_shop_voucher: false, auto_apply_platform_voucher: first, auto_apply_spl_voucher: true, spl_voucher_info: null, claimable_vouchers: [] },
                 device_info: { device_id: did, device_fingerprint: did + '_unknown', device_sz_fingerprint: fp || did, timezone_offset_in_minutes: 420 },
@@ -2656,17 +2667,19 @@ async function foDoCheckoutInit(chatId, userId, msgId) {
     const firstItem = cart[0];
     if (!firstItem) return await safeEditMessage(chatId, msgId, "❌ Keranjang kosong.");
 
-    await safeEditMessage(chatId, msgId, `⏳ <b>PROCESSING</b>\n<code>--------------------------</code>\n🔄 Inisialisasi checkout...\n📡 Mengambil payment & kurir...\n<code>--------------------------</code>`);
+    const isMulti = cart.length > 1;
+    await safeEditMessage(chatId, msgId, `⏳ <b>PROCESSING (${isMulti ? 'MULTI-ORDER' : 'SINGLE ORDER'})</b>\n<code>--------------------------</code>\n🔄 Inisialisasi checkout...\n📡 Mengambil payment & kurir...\n<code>--------------------------</code>`);
     us.fo_msg_id = msgId;
-    logger.engine("FO_CHECKOUT_INIT", `Hit checkout/get [P1] shop=${firstItem.shopid} item=${firstItem.itemid} model=${firstItem.modelid} qty=${firstItem.quantity}`, "INFO");
+    const cartLog = cart.map(c => `${c.itemid}/${c.modelid}x${c.quantity}`).join(' | ');
+    logger.engine("CHECKOUT_GET", `Hit checkout/get » shop=${firstItem.shopid} item=${firstItem.itemid} model=${firstItem.modelid} qty=${firstItem.quantity}${isMulti ? ` [MULTI: ${cartLog}]` : ''}`, "INFO");
 
     try {
-        const co0 = await foPostCheckoutGet(cookie, csrf, firstItem.shopid, firstItem.itemid, firstItem.modelid, firstItem.quantity, fp, {}, [], [], {}, null, null, 3, false);
+        const co0 = await foPostCheckoutGet(cookie, csrf, firstItem.shopid, firstItem.itemid, firstItem.modelid, firstItem.quantity, fp, {}, [], [], {}, null, null, 3, false, null, false, cart);
         if (!co0 || co0.error) {
-            logger.engine("FO_CHECKOUT_INIT", `checkout/get gagal: ${co0?.error_msg || co0?.error || 'unknown'}`, "ERR");
+            logger.engine("CHECKOUT_GET_REJECT", `${co0?.error || 'unknown'}: ${(co0?.error_msg || '').substring(0, 80)}`, "ERR");
             return await safeEditMessage(chatId, msgId, `❌ Gagal checkout/get:\n<code>${co0?.error_msg || JSON.stringify(co0?.error || 'unknown')}</code>`, { reply_markup: { inline_keyboard: [[{ text: "🔙 Kembali", callback_data: "back_home" }]] } });
         }
-        logger.engine("FO_CHECKOUT_INIT", `Response OK can_checkout=${co0.can_checkout || 'true'} total=${co0.checkout_price_data?.total_payable || 0}`, "SUCCESS");
+        logger.engine("CHECKOUT_GET", `Response error=${co0.error || 'NULL'} can_checkout=${co0.can_checkout != null ? co0.can_checkout : true} total=${co0.checkout_price_data?.total_payable || 0}`, "SUCCESS");
         us.foCo0 = co0;
 
         // Extract shipping/logistics channels with COURIER_NAMES
@@ -2846,7 +2859,8 @@ async function foDoFinalCheckout(chatId, msgId, userId) {
     const cookie = us.foCookie;
     const fp = us.foFingerprint;
     const csrf = us.foCsrf;
-    const firstItem = us.cart[0];
+    const cart = us.cart || [];
+    const firstItem = cart[0];
 
     await safeEditMessage(chatId, msgId, '⏳ <b>Validate voucher & checkout final...</b>');
     try {
@@ -2865,7 +2879,7 @@ async function foDoFinalCheckout(chatId, msgId, userId) {
 
         const fsvInfo = us.foSelFsv ? { free_shipping_voucher_id: us.foSelFsv.promotionid, free_shipping_voucher_code: us.foSelFsv.voucher_code } : {};
         const so = us.foLogistic ? [{ sync: true, logistics: { channelid: us.foLogistic } }] : null;
-        const coF = await foPostCheckoutGet(cookie, csrf, firstItem.shopid, firstItem.itemid, firstItem.modelid, firstItem.quantity, fp, fsvInfo, us.foSelPV || [], [], us.foPayment, so, null, 3, true, us.foCo0, us.foUseCoins);
+        const coF = await foPostCheckoutGet(cookie, csrf, firstItem.shopid, firstItem.itemid, firstItem.modelid, firstItem.quantity, fp, fsvInfo, us.foSelPV || [], [], us.foPayment, so, null, 3, true, us.foCo0, us.foUseCoins, cart);
         if (!coF || coF.error) {
             return await safeEditMessage(chatId, msgId, `❌ Gagal checkout final:\n<code>${coF?.error_msg || JSON.stringify(coF?.error || '')}</code>`, { reply_markup: { inline_keyboard: [[{ text: "🔙 Kembali", callback_data: "back_home" }]] } });
         }
@@ -3041,10 +3055,17 @@ async function foDoPlaceOrder(chatId, msgId, userId) {
     const csrf = us.foCsrf;
     const coF = us.foCoFinal;
     const promo = coF.promotion_data || {};
-    const firstItem = us.cart[0];
+    const cart = us.cart || [];
+    const firstItem = cart[0];
+    const cartLogStr = cart.map(c => `${c.itemid}/${c.modelid}x${c.quantity}`).join(' | ');
+    const payName = us.foPayArr?.[us.foPayIdx]?.name || 'Default';
+    const logFoSuccess = (orderId, coResp, vList) => {
+        const totalRp = (coResp?.checkout_price_data?.total_payable || 0) / 100000;
+        logger.info(userId, "ORDER_SUCCESS", `OrderID=${orderId} | akun=${us.foUsername || 'Shopee Store'} | bayar=${payName} | kurir=${us.foLogisticName || 'Default'} | total=Rp${totalRp.toLocaleString('id-ID')} | koin=${us.foUseCoins ? 'ON' : 'OFF'} | voucher=[${vList || 'tanpa voucher'}] | item=[${cartLogStr}]`);
+    };
 
     await safeEditMessage(chatId, msgId, `⏳ <b>Memproses PLACE ORDER...</b>\n<code>--------------------------</code>\n🔄 Harap tunggu, jangan tekan tombol apapun.\n<code>--------------------------</code>`);
-    logger.engine("FO_PLACE", `User ${userId} memulai place order...`, "INFO");
+    logger.engine("PLACE_ORDER", `Hit place_order (total Rp ${((coF.checkout_price_data?.total_payable || 0) / 100000).toLocaleString('id-ID')})...`, "INFO");
 
     try {
         const fPV = promo.platform_vouchers ? promo.platform_vouchers.filter(pv => !pv.invalid_message) : (us.foSelPV || []);
@@ -3058,7 +3079,8 @@ async function foDoPlaceOrder(chatId, msgId, userId) {
             await foAutoSaveCookie(userId, us);
 
             const successData = await foRenderSuccessMsg(us, coF, res.response, null);
-            logger.engine("FO_SUCCESS", `Order ${successData.orderId} berhasil! Total: ${((coF.checkout_price_data?.total_payable || 0) / 100000)}`, "SUCCESS");
+            logger.engine("PLACE_ORDER", `Order berhasil dibuat: ${successData.orderId}`, "SUCCESS");
+            logFoSuccess(successData.orderId, coF, fPV.map(v => v.voucher_code).join(', '));
 
             const doneKb = [
                 [{ text: '📋 Cek Pesanan', callback_data: 'memru_check_start' }, { text: '🏠 Menu Utama', callback_data: 'back_home' }]
@@ -3069,13 +3091,13 @@ async function foDoPlaceOrder(chatId, msgId, userId) {
         }
 
         const err = res.response?.error_action?.message || res.response?.error_msg || String(res.response?.error || 'unknown');
-        logger.engine("FO_PLACE_ERR", `Error: ${err.substring(0, 100)}`, "ERR");
+        logger.engine("PLACE_ORDER_REJECT", `${err.substring(0, 100)}`, "ERR");
 
         if (err.toLowerCase().includes('coupon') || err.toLowerCase().includes('voucher')) {
             await safeEditMessage(chatId, msgId, `⚠️ Error: <code>${err}</code>\n\n🔄 <b>Auto retry tanpa platform voucher (FSV tetap)...</b>`);
-            logger.engine("FO_RETRY", `Retry tanpa platform voucher...`, "WARN");
+            logger.engine("PLACE_ORDER", `Retry tanpa platform voucher...`, "WARN");
             const so = us.foLogistic ? [{ sync: true, logistics: { channelid: us.foLogistic } }] : null;
-            const co3 = await foPostCheckoutGet(cookie, csrf, firstItem.shopid, firstItem.itemid, firstItem.modelid, firstItem.quantity, fp, fsvInfo, [], [], us.foPayment, so, null, 3, false, us.foCo0);
+            const co3 = await foPostCheckoutGet(cookie, csrf, firstItem.shopid, firstItem.itemid, firstItem.modelid, firstItem.quantity, fp, fsvInfo, [], [], us.foPayment, so, null, 3, false, us.foCo0, us.foUseCoins, cart);
             if (co3 && !co3.error) {
                 const fsv3 = co3.promotion_data?.free_shipping_voucher_info || fsvInfo;
                 const res2 = await foPostPlaceOrder(cookie, csrf, co3, fp, us.foPayment, fsv3, [], [], us.foUseCoins);
@@ -3083,22 +3105,24 @@ async function foDoPlaceOrder(chatId, msgId, userId) {
                     saveFpToPool(fp);
                     await foAutoSaveCookie(userId, us);
                     const successData = await foRenderSuccessMsg(us, co3, res2.response, 'Retry sukses (tanpa platform voucher, FSV tetap)');
-                    logger.engine("FO_RETRY_OK", `Retry sukses: ${successData.orderId}`, "SUCCESS");
+                    logger.engine("PLACE_ORDER", `Order berhasil dibuat: ${successData.orderId}`, "SUCCESS");
+                    logFoSuccess(successData.orderId, co3, null);
                     const doneKb2 = [[{ text: '📋 Cek Pesanan', callback_data: 'memru_check_start' }, { text: '🏠 Menu Utama', callback_data: 'back_home' }]];
                     await safeEditMessage(chatId, msgId, successData.txt, { reply_markup: { inline_keyboard: doneKb2 } });
                     delete userState[userId];
                     return;
                 }
                 await safeEditMessage(chatId, msgId, '⚠️ Masih gagal, retry tanpa voucher apapun...');
-                logger.engine("FO_RETRY2", `Retry tanpa semua voucher...`, "WARN");
-                const co4 = await foPostCheckoutGet(cookie, csrf, firstItem.shopid, firstItem.itemid, firstItem.modelid, firstItem.quantity, fp, {}, [], [], us.foPayment, so, null, 3, false, us.foCo0);
+                logger.engine("PLACE_ORDER", `Retry tanpa semua voucher...`, "WARN");
+                const co4 = await foPostCheckoutGet(cookie, csrf, firstItem.shopid, firstItem.itemid, firstItem.modelid, firstItem.quantity, fp, {}, [], [], us.foPayment, so, null, 3, false, us.foCo0, us.foUseCoins, cart);
                 if (co4 && !co4.error) {
                     const res3 = await foPostPlaceOrder(cookie, csrf, co4, fp, us.foPayment, {}, [], [], us.foUseCoins);
                     if (res3.response && !res3.response.error) {
                         saveFpToPool(fp);
                         await foAutoSaveCookie(userId, us);
                         const successData = await foRenderSuccessMsg(us, co4, res3.response, 'Retry sukses (tanpa semua voucher)');
-                        logger.engine("FO_RETRY2_OK", `Retry2 sukses: ${successData.orderId}`, "SUCCESS");
+                        logger.engine("PLACE_ORDER", `Order berhasil dibuat: ${successData.orderId}`, "SUCCESS");
+                        logFoSuccess(successData.orderId, co4, null);
                         const doneKb3 = [[{ text: '📋 Cek Pesanan', callback_data: 'memru_check_start' }, { text: '🏠 Menu Utama', callback_data: 'back_home' }]];
                         await safeEditMessage(chatId, msgId, successData.txt, { reply_markup: { inline_keyboard: doneKb3 } });
                         delete userState[userId];
@@ -3120,13 +3144,13 @@ async function foDoPlaceOrder(chatId, msgId, userId) {
         } else if (String(err).includes('serviceability') || String(err).includes('channel')) {
             failMsg = "🚚 Jasa kirim berubah saat checkout. Pilih ulang kurir lalu coba bayar lagi.";
         }
-        logger.engine("FO_FAIL", `Place order gagal: ${failMsg.substring(0, 100)}`, "ERR");
+        logger.engine("PLACE_ORDER_REJECT", `Place order gagal: ${failMsg.substring(0, 100)}`, "ERR");
 
         const failKb = [[{ text: '🛒 Coba Lagi', callback_data: 'memru_order_start' }], [{ text: '🏠 Menu Utama', callback_data: 'back_home' }]];
         await safeEditMessage(chatId, msgId, `❌ <b>PLACE ORDER GAGAL</b>\n<code>--------------------------</code>\n<code>${failMsg}</code>\n<code>--------------------------</code>`, { reply_markup: { inline_keyboard: failKb } });
         delete userState[userId];
     } catch (e) {
-        logger.engine("FO_CRITICAL", `Exception: ${e.message}`, "ERR");
+        logger.engine("PLACE_ORDER", `Exception: ${e.message}`, "ERR");
         await safeEditMessage(chatId, msgId, `❌ Error: <code>${e.message}</code>`, { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'back_home' }]] } });
         delete userState[userId];
     }
@@ -5922,7 +5946,8 @@ bot.on("callback_query", async (q) => {
         if (!us || !us.cart || us.cart.length === 0) {
             return await safeEditMessage(chatId, messageId, "🛒 <b>Keranjang kosong.</b>\nTambahkan produk terlebih dahulu.", { reply_markup: { inline_keyboard: [[{ text: "🔙 Kembali", callback_data: "memru_order_start" }]] } });
         }
-        logger.engine("FO_CHECKOUT", `User ${userId} memulai checkout dengan ${us.cart.length} item`, "INFO");
+        const foCartLog = us.cart.map(c => `${c.itemid}/${c.modelid}x${c.quantity}`).join(' | ');
+        logger.info(userId, "FO_CHECKOUT", `${us.cart.length > 1 ? 'MULTI-ORDER' : 'SINGLE ORDER'} | item=[${foCartLog}]`);
         return await foDoCheckoutInit(chatId, userId, messageId);
     }
 
@@ -6377,7 +6402,7 @@ bot.on("callback_query", async (q) => {
         if (!us.voucherChannelMap) {
             await safeEditMessage(chatId, messageId, `⏳ <b>Validasi voucher untuk ${us.payment.emoji} ${us.payment.name}...</b>`, { reply_markup: { inline_keyboard: [] } });
             try {
-                const probe = await executeShopeeCheckout(us.shopid, us.itemid, us.modelid, us.final_quantity || 1, us.cookie, us.identity, null, true, us.payment, us.useCoins, { cartItems: (us.cart && us.cart.length > 1) ? us.cart : null });
+                const probe = await executeShopeeCheckout(us.shopid, us.itemid, us.modelid, us.final_quantity || 1, us.cookie, us.identity, null, true, us.payment, us.useCoins, { cartItems: (us.cart && us.cart.length >= 1) ? us.cart : null });
                 us.voucherChannelMap = probe.success ? (probe.voucherChannelMap || {}) : {};
                 if (!us.courierName && probe.selectedCourierName) us.courierName = probe.selectedCourierName;
                 if (probe.success && probe.priceDetail) {
@@ -6621,7 +6646,7 @@ bot.on("callback_query", async (q) => {
         if (!us || !us.cookie) return await safeEditMessage(chatId, messageId, "⏰ Sesi kedaluwarsa.", { reply_markup: { inline_keyboard: [[{ text: "🔙 Kembali", callback_data: "memru_order_start" }]] } });
         await safeEditMessage(chatId, messageId, "🧮 <b>Menghitung harga via Shopee (checkout/get)...</b>", { reply_markup: { inline_keyboard: [] } });
         try {
-            const pr = await executeShopeeCheckout(us.shopid, us.itemid, us.modelid, us.final_quantity || 1, us.cookie, us.identity, us.voucherSel, true, us.payment || DEFAULT_PAYMENT, us.useCoins, { note: us.buyerNote, courierMap: us.courierMap, courierId: us.courierId, cartItems: (us.cart && us.cart.length > 1) ? us.cart : null, szToken: us.szToken, sapri: us.sapri });
+            const pr = await executeShopeeCheckout(us.shopid, us.itemid, us.modelid, us.final_quantity || 1, us.cookie, us.identity, us.voucherSel, true, us.payment || DEFAULT_PAYMENT, us.useCoins, { note: us.buyerNote, courierMap: us.courierMap, courierId: us.courierId, cartItems: (us.cart && us.cart.length >= 1) ? us.cart : null, szToken: us.szToken, sapri: us.sapri });
             if (pr.szToken) us.szToken = pr.szToken; if (pr.sapri) us.sapri = pr.sapri;
             if (!us.courierName && pr.selectedCourierName) us.courierName = pr.selectedCourierName; // pakai nama kurir default Shopee
             if (!pr.success) {
@@ -6740,7 +6765,7 @@ bot.on("callback_query", async (q) => {
                 false,
                 userSession.payment || DEFAULT_PAYMENT,
                 userSession.useCoins,
-                { note: userSession.buyerNote, courierMap: userSession.courierMap, courierId: userSession.courierId, cartItems: (userSession.cart && userSession.cart.length > 1) ? userSession.cart : null, szToken: userSession.szToken, sapri: userSession.sapri }
+                { note: userSession.buyerNote, courierMap: userSession.courierMap, courierId: userSession.courierId, cartItems: (userSession.cart && userSession.cart.length >= 1) ? userSession.cart : null, szToken: userSession.szToken, sapri: userSession.sapri }
             );
 
             if (coRes.success) {
